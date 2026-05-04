@@ -15,8 +15,6 @@ Najważniejsze wyróżniki to:
 1. założenie mobilności użytkowników naziemnych - większość prac zakłada statycznych użytkowników, my testujemy zarówno statycznych, jak i mobilnych w tym samym frameworku;
 2. kooperacja multi-UAV zamiast pojedynczego drona - większość literatury skupia się na single-UAV; my badamy jak liczba dronów i wspólne projektowanie trajektorii wpływa na trade-off.
 
-___
-
 # Uproszczony opis modelu systemu
 
 ## Główne elementy systemu
@@ -38,7 +36,7 @@ Jedna misja trwa 60-120 s (*T* - czas misji) i jest podzielona na małe sloty cz
 ## Założenia dot. kanału transmisyjnego
 
 - **Dominuje LoS (Line-of-Sight)** - drony są wysoko, więc zakładamy bezpośrednią widoczność z użytkownikami
-- **Tłumienie** zależy tylko od odległości UAV–użytkownik:
+- **Tłumienie** zależy tylko od odległości UAV–użytkownik: 
 $$
 h_{n,k}[t] = \frac{\beta_0}{|\mathbf{q}_n[t] - \mathbf{u}_k|^2}
 $$
@@ -58,8 +56,6 @@ Każdy UAV jednocześnie:
 - "skanuje" radarem **targets**
 - używa do tych celów **tej samej anteny** i tego samego sygnału (ISAC)
 
-___
-
 # Co mierzymy
 
 | Wymiar | Metryka | Wzór (przybliżony) |
@@ -67,8 +63,6 @@ ___
 | Komunikacja | Rate użytkownika $k$ | $R_k[t] = \log_2(1 + \text{SINR}_k[t])$ |
 | Sensing | Dokładność lokalizacji celu $q$ | min CRB (Cramér-Rao Bound, im niższe, tym lepiej) |
 | Wspólny/trade-off | Energia | propulsja UAV + transmisja |
-
-___
 
 # Problem optymalizacji 
 
@@ -104,8 +98,6 @@ Problem jest niewypukły i sprzężony z trzech powodów:
 1. **Sprzężenie zmiennych** - trajektoria wpływa na kanał, kanał wpływa na beamforming, beamforming wpływa na alokację mocy, a wszystko razem na CRB
 2. **Trade-off communication vs. sensing** - ta sama moc i ten sam beam służą dwóm celom jednocześnie
 3. **Wymiar czasowy** - decyzje w chwili $t$ wpływają na to, gdzie UAV może być w $t + 1$
-
-___
 
 # Obraz strategii rozwiązania
 
