@@ -36,10 +36,12 @@ Jedna misja trwa 60-120 s (*T* - czas misji) i jest podzielona na małe sloty cz
 ## Założenia dot. kanału transmisyjnego
 
 - **Dominuje LoS (Line-of-Sight)** - drony są wysoko, więc zakładamy bezpośrednią widoczność z użytkownikami
-- **Tłumienie** zależy tylko od odległości UAV–użytkownik: 
+- **Tłumienie** zależy tylko od odległości UAV–użytkownik:
+
 $$
 h_{n,k}[t] = \frac{\beta_0}{|\mathbf{q}_n[t] - \mathbf{u}_k|^2}
 $$
+
 gdzie $\beta_0$ to tłumienie referencyjne na 1 m, a $\mathbf{u}_k$ to pozycja użytkownika $k$.
 - **Brak fading'u multipath** w pierwszej wersji (można dodać później)
 
