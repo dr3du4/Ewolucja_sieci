@@ -37,6 +37,8 @@ class SimulationResults:
 
     # Trajectory
     uav_trajectories: np.ndarray = field(default_factory=lambda: np.array([]))
+    user_history: np.ndarray = field(default_factory=lambda: np.array([]))
+    target_history: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
 class ISACSimulation:
@@ -52,10 +54,12 @@ class ISACSimulation:
         scenario_params: ScenarioParams | None = None,
         channel_params: ChannelParams | None = None,
         sensing_params: SensingParams | None = None,
+        dt_lookahead: float = 2.0,
     ):
         self.scenario_params = scenario_params or ScenarioParams()
         self.channel_params = channel_params or ChannelParams()
         self.sensing_params = sensing_params or SensingParams()
+        self.dt_lookahead = dt_lookahead
 
         self.channel = ChannelModel(self.channel_params)
         self.sensing = SensingModel(self.sensing_params, self.channel_params)
@@ -113,27 +117,38 @@ class ISACSimulation:
         alpha = self.sensing_params.sensing_power_ratio  # sensing weight
         velocities = np.zeros((n, 2))
 
+        # Predict-ahead: aim at where users/targets will be in dt_lookahead seconds.
+        # For static entities velocities are zero, so predicted == current.
+        predicted_users = (
+            scenario.user_positions[:, :2]
+            + scenario.user_velocities * self.dt_lookahead
+        )
+        predicted_users = np.clip(
+            predicted_users, 0, scenario.params.area_size
+        )
+        predicted_targets = (
+            scenario.target_positions[:, :2]
+            + scenario.target_velocities * self.dt_lookahead
+        )
+        predicted_targets = np.clip(
+            predicted_targets, 0, scenario.params.area_size
+        )
+
         for i in range(n):
             uav_xy = scenario.uav_positions[i, :2]
 
-            # --- Communication pull: toward centroid of nearest users ---
-            user_dists = np.linalg.norm(
-                scenario.user_positions[:, :2] - uav_xy, axis=1
-            )
+            # --- Communication pull: toward centroid of nearest (predicted) users ---
+            user_dists = np.linalg.norm(predicted_users - uav_xy, axis=1)
             # Assign users to nearest UAV (simple partitioning)
             n_per_uav = max(1, scenario.params.n_users // n)
             nearest_users = np.argsort(user_dists)[:n_per_uav]
-            comm_target = scenario.user_positions[nearest_users, :2].mean(
-                axis=0
-            )
+            comm_target = predicted_users[nearest_users].mean(axis=0)
 
-            # --- Sensing pull: toward nearest sensing target ---
+            # --- Sensing pull: toward nearest (predicted) sensing target ---
             if scenario.params.n_targets > 0:
-                tgt_dists = np.linalg.norm(
-                    scenario.target_positions[:, :2] - uav_xy, axis=1
-                )
+                tgt_dists = np.linalg.norm(predicted_targets - uav_xy, axis=1)
                 nearest_tgt = np.argmin(tgt_dists)
-                sense_target = scenario.target_positions[nearest_tgt, :2]
+                sense_target = predicted_targets[nearest_tgt]
             else:
                 sense_target = comm_target
 
@@ -265,6 +280,8 @@ class ISACSimulation:
             total_avg_crb=float(np.mean(avg_crb)),
             total_avg_sensing_snr=float(np.mean(avg_snr_s)),
             uav_trajectories=scenario.uav_trajectory.copy(),
+            user_history=scenario.user_history.copy(),
+            target_history=scenario.target_history.copy(),
         )
         return results
 
