@@ -57,6 +57,48 @@ def plot_pareto_curve(
     return fig
 
 
+def plot_pareto_multi(
+    results_dict: dict[str, list[SimulationResults]],
+    alphas: np.ndarray,
+    title: str = "Pareto Trade-off Comparison",
+    save_path: str | None = None,
+):
+    """
+    Pareto curves for multiple scenario variants on a single axis.
+
+    Parameters
+    ----------
+    results_dict : {label: list[SimulationResults]} — one Pareto sweep per label
+    """
+    set_plot_style()
+    fig, ax = plt.subplots()
+
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    palette = [
+        "#e74c3c", "#2ecc71", "#3498db", "#f39c12",
+        "#9b59b6", "#1abc9c", "#34495e", "#e67e22",
+    ]
+    for i, (label, results) in enumerate(results_dict.items()):
+        rates = [r.total_avg_rate / 1e6 for r in results]
+        crbs = [r.total_avg_crb for r in results]
+        ax.plot(
+            crbs, rates,
+            marker=markers[i % len(markers)],
+            linestyle="-",
+            label=label,
+            color=palette[i % len(palette)],
+        )
+
+    ax.set_xlabel("Avg CRB RMSE [m] (lower = better sensing)")
+    ax.set_ylabel("Avg User Rate [Mbps] (higher = better comms)")
+    ax.set_title(title)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight")
+    return fig
+
+
 def plot_pareto_comparison(
     results_1uav: list[SimulationResults],
     results_2uav: list[SimulationResults],
@@ -128,15 +170,29 @@ def plot_time_series(
 # ------------------------------------------------------------------
 
 
+def _has_motion(history: np.ndarray | None) -> bool:
+    """True if a (steps, n, 3) history shows non-trivial movement."""
+    if history is None or history.size == 0 or history.shape[0] < 2:
+        return False
+    return bool(np.any(history.std(axis=0) > 1e-3))
+
+
 def plot_trajectory_map(
     results: SimulationResults,
     scenario_params=None,
     user_positions: np.ndarray | None = None,
     target_positions: np.ndarray | None = None,
+    user_history: np.ndarray | None = None,
+    target_history: np.ndarray | None = None,
     save_path: str | None = None,
 ):
     """
     2D map showing UAV trajectories, users, and targets.
+
+    If `user_history` / `target_history` are supplied and contain motion,
+    the entity's path is rendered as a thin trail with a marker at the
+    final position. Falls back to a single point from `user_positions`
+    / `target_positions` for static entities.
     """
     set_plot_style()
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -144,6 +200,12 @@ def plot_trajectory_map(
     area = 500.0
     if scenario_params:
         area = scenario_params.area_size
+
+    # Fall back to results attributes if explicit history not passed
+    if user_history is None:
+        user_history = getattr(results, "user_history", None)
+    if target_history is None:
+        target_history = getattr(results, "target_history", None)
 
     # UAV trajectories
     traj = results.uav_trajectories  # (steps, n_uavs, 3)
@@ -163,14 +225,35 @@ def plot_trajectory_map(
         )
 
     # Users
-    if user_positions is not None:
+    if _has_motion(user_history):
+        for k in range(user_history.shape[1]):
+            ax.plot(
+                user_history[:, k, 0], user_history[:, k, 1],
+                color="blue", alpha=0.35, linewidth=0.8, zorder=3,
+            )
+        ax.scatter(
+            user_history[-1, :, 0], user_history[-1, :, 1],
+            marker="o", s=80, c="blue", label="Users (final)", zorder=4,
+        )
+    elif user_positions is not None:
         ax.scatter(
             user_positions[:, 0], user_positions[:, 1],
             marker="o", s=80, c="blue", label="Users", zorder=4,
         )
 
     # Targets
-    if target_positions is not None:
+    if _has_motion(target_history):
+        for q in range(target_history.shape[1]):
+            ax.plot(
+                target_history[:, q, 0], target_history[:, q, 1],
+                color="red", alpha=0.35, linewidth=0.8, zorder=3,
+            )
+        ax.scatter(
+            target_history[-1, :, 0], target_history[-1, :, 1],
+            marker="x", s=100, c="red", linewidths=2,
+            label="Sensing Targets (final)", zorder=4,
+        )
+    elif target_positions is not None:
         ax.scatter(
             target_positions[:, 0], target_positions[:, 1],
             marker="x", s=100, c="red", linewidths=2,
