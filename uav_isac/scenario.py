@@ -156,7 +156,8 @@ class Scenario:
             vel = np.atleast_2d(uav_velocities)[:, :2]
             speed = np.linalg.norm(vel, axis=1, keepdims=True)
             max_s = self.params.uav_max_speed
-            scale = np.where(speed > max_s, max_s / speed, 1.0)
+            safe_speed = np.maximum(speed, 1e-9)  # avoid 0/0 in np.where
+            scale = np.where(speed > max_s, max_s / safe_speed, 1.0)
             vel = vel * scale
             self.uav_positions[:, :2] += vel * dt
         # Clip to area

@@ -16,6 +16,7 @@ from uav_isac import (
     ChannelParams,
     ScenarioParams,
     SensingParams,
+    EnergyParams,
     ISACSimulation,
 )
 from uav_isac.visualization import (
@@ -25,6 +26,7 @@ from uav_isac.visualization import (
     plot_time_series,
     plot_trajectory_map,
     plot_comparison_bars,
+    plot_energy_per_alpha,
 )
 
 
@@ -54,29 +56,43 @@ def build_scenario(n_uavs: int, user_mob: str, target_mob: str, seed: int) -> Sc
     )
 
 
-def run_pareto(scenario_params, channel_params, sensing_params_template, alphas, label):
+def _feas_tag(res) -> str:
+    if res.mission_feasible:
+        return ""
+    return f" [INFEASIBLE: UAVs {res.infeasible_uavs}]"
+
+
+def run_pareto(
+    scenario_params, channel_params, sensing_params_template,
+    energy_params, alphas, label,
+):
     """Run single greedy + Pareto sweep over alpha. Returns (single, [pareto])."""
     sim = ISACSimulation(
         scenario_params,
         channel_params,
         SensingParams(**sensing_params_template.__dict__),
+        energy_params,
     )
     single = sim.run(trajectory_policy="greedy")
     print(
         f"[{label}] avg rate: {single.total_avg_rate/1e6:.2f} Mbps,"
-        f" CRB RMSE: {single.total_avg_crb:.2f} m"
+        f" CRB RMSE: {single.total_avg_crb:.2f} m,"
+        f" E: {single.energy_consumed_j_avg/1000:.2f} kJ/UAV"
+        f"{_feas_tag(single)}"
     )
 
     pareto = []
     for a in alphas:
         sp = SensingParams(**sensing_params_template.__dict__)
         sp.sensing_power_ratio = float(a)
-        s = ISACSimulation(scenario_params, channel_params, sp)
+        s = ISACSimulation(scenario_params, channel_params, sp, energy_params)
         res = s.run(trajectory_policy="greedy")
         pareto.append(res)
         print(
             f"  α={a:.1f} → rate={res.total_avg_rate/1e6:.2f} Mbps,"
-            f" CRB={res.total_avg_crb:.2f} m"
+            f" CRB={res.total_avg_crb:.2f} m,"
+            f" E={res.energy_consumed_j_avg/1000:.2f} kJ"
+            f"{_feas_tag(res)}"
         )
     return single, pareto
 
@@ -94,6 +110,11 @@ def main():
         n_antennas=8,
         n_pulses=64,
         radar_cross_section=1.0,
+    )
+    energy_params = EnergyParams(
+        p_hover_w=100.0,
+        k_drag=0.5,
+        battery_j=15_000.0,
     )
 
     seed = 42
@@ -114,7 +135,8 @@ def main():
 
             sp = build_scenario(n_uavs, user_mob, target_mob, seed)
             single, pareto = run_pareto(
-                sp, channel_params, sensing_params_template, alphas, label
+                sp, channel_params, sensing_params_template,
+                energy_params, alphas, label,
             )
             runs[(n_uavs, mob_name)] = (sp, single, pareto)
 
@@ -191,6 +213,21 @@ def main():
         )
 
     # ==================================================================
+    # Energy vs α — one chart per n_uavs, all mobility configs overlaid
+    # ==================================================================
+    for n_uavs in (1, 2):
+        bundle = {
+            mob_name: runs[(n_uavs, mob_name)][2]
+            for mob_name, _, _ in MOBILITY_CONFIGS
+        }
+        plot_energy_per_alpha(
+            bundle, alphas,
+            title=f"{n_uavs} UAV(s) — Energy budget vs α",
+            battery_j=energy_params.battery_j,
+            save_path=str(output_dir / f"energy_per_alpha_{n_uavs}uav.png"),
+        )
+
+    # ==================================================================
     # Comparison bars
     # ==================================================================
     plot_comparison_bars(
@@ -206,12 +243,16 @@ def main():
     # Export CSV (long format: mobility, n_uavs, alpha, rate, crb)
     # ==================================================================
     print("Exporting CSV data...")
-    rows = ["mobility,n_uavs,alpha,avg_rate_mbps,crb_rmse_m"]
+    rows = [
+        "mobility,n_uavs,alpha,avg_rate_mbps,crb_rmse_m,energy_kj_per_uav,feasible"
+    ]
     for (n_uavs, mob_name), (_, _, pareto) in runs.items():
         for a, r in zip(alphas, pareto):
             rows.append(
                 f"{mob_name},{n_uavs},{a:.1f},"
-                f"{r.total_avg_rate/1e6:.4f},{r.total_avg_crb:.4f}"
+                f"{r.total_avg_rate/1e6:.4f},{r.total_avg_crb:.4f},"
+                f"{r.energy_consumed_j_avg/1000:.4f},"
+                f"{int(r.mission_feasible)}"
             )
     (output_dir / "pareto_data.csv").write_text("\n".join(rows) + "\n")
 

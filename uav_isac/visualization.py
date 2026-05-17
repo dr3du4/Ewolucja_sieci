@@ -57,6 +57,57 @@ def plot_pareto_curve(
     return fig
 
 
+def plot_energy_per_alpha(
+    results_dict: dict[str, list[SimulationResults]],
+    alphas: np.ndarray,
+    title: str = "UAV energy budget vs sensing power ratio",
+    battery_j: float | None = None,
+    save_path: str | None = None,
+):
+    """
+    Energy per UAV averaged across the fleet, as a function of α.
+
+    Parameters
+    ----------
+    results_dict : {label: list[SimulationResults]} — one sweep per label
+    alphas       : (len(sweep),) — α values that index the sweep
+    battery_j    : draws a horizontal cap if provided (infeasibility line)
+    """
+    set_plot_style()
+    fig, ax = plt.subplots()
+
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    palette = [
+        "#3498db", "#e74c3c", "#2ecc71", "#f39c12",
+        "#9b59b6", "#1abc9c", "#34495e", "#e67e22",
+    ]
+    for i, (label, results) in enumerate(results_dict.items()):
+        energies_kj = [r.energy_consumed_j_avg / 1000 for r in results]
+        ax.plot(
+            alphas, energies_kj,
+            marker=markers[i % len(markers)],
+            linestyle="-",
+            label=label,
+            color=palette[i % len(palette)],
+        )
+
+    if battery_j is not None:
+        ax.axhline(
+            battery_j / 1000,
+            color="red", linestyle="--", linewidth=1.5,
+            label=f"Battery cap ({battery_j/1000:.0f} kJ)",
+        )
+
+    ax.set_xlabel("Sensing power ratio α")
+    ax.set_ylabel("Avg energy per UAV [kJ]")
+    ax.set_title(title)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight")
+    return fig
+
+
 def plot_pareto_multi(
     results_dict: dict[str, list[SimulationResults]],
     alphas: np.ndarray,
@@ -298,10 +349,13 @@ def plot_comparison_bars(
         "Min Rate [Mbps]": [r.total_min_rate / 1e6 for r in results_dict.values()],
         "CRB RMSE [m]": [r.total_avg_crb for r in results_dict.values()],
         "Sensing SNR [dB]": [r.total_avg_sensing_snr for r in results_dict.values()],
+        "Energy [kJ/UAV]": [
+            r.energy_consumed_j_avg / 1000 for r in results_dict.values()
+        ],
     }
 
-    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
-    colors = ["#3498db", "#2ecc71", "#e74c3c", "#f39c12"]
+    fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+    colors = ["#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6"]
 
     for ax, (name, values), color in zip(axes, metrics.items(), colors):
         bars = ax.bar(labels, values, color=color, alpha=0.8)

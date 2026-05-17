@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .channel_model import ChannelModel, ChannelParams
 from .scenario import Scenario, ScenarioParams
 from .sensing import SensingModel, SensingParams
+from .energy import EnergyParams, propulsion_power_w, tx_power_w
 
 
 @dataclass
@@ -40,6 +41,12 @@ class SimulationResults:
     user_history: np.ndarray = field(default_factory=lambda: np.array([]))
     target_history: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Energy (per UAV [J], plus aggregates and feasibility flag)
+    energy_consumed_j_per_uav: np.ndarray = field(default_factory=lambda: np.array([]))
+    energy_consumed_j_avg: float = 0.0
+    mission_feasible: bool = True
+    infeasible_uavs: list = field(default_factory=list)
+
 
 class ISACSimulation:
     """
@@ -54,11 +61,13 @@ class ISACSimulation:
         scenario_params: ScenarioParams | None = None,
         channel_params: ChannelParams | None = None,
         sensing_params: SensingParams | None = None,
+        energy_params: EnergyParams | None = None,
         dt_lookahead: float = 2.0,
     ):
         self.scenario_params = scenario_params or ScenarioParams()
         self.channel_params = channel_params or ChannelParams()
         self.sensing_params = sensing_params or SensingParams()
+        self.energy_params = energy_params or EnergyParams()
         self.dt_lookahead = dt_lookahead
 
         self.channel = ChannelModel(self.channel_params)
@@ -264,6 +273,18 @@ class ISACSimulation:
 
             scenario.step(vel)
 
+        # --- Energy ---
+        # Effective per-step speed reconstructed from the trajectory (m/s).
+        # Shape: (n_steps, n_uavs)
+        diffs = np.diff(scenario.uav_trajectory[:, :, :2], axis=0)
+        speeds = np.linalg.norm(diffs, axis=2) / self.scenario_params.dt
+        p_prop = propulsion_power_w(speeds, self.energy_params)
+        p_tx = tx_power_w(self.channel_params.tx_power_dbm)  # scalar [W]
+        energy_per_uav = (p_prop + p_tx).sum(axis=0) * self.scenario_params.dt
+        infeasible = np.where(
+            energy_per_uav > self.energy_params.battery_j
+        )[0].tolist()
+
         # --- Aggregate results ---
         results = SimulationResults(
             n_uavs=self.scenario_params.n_uavs,
@@ -282,6 +303,10 @@ class ISACSimulation:
             uav_trajectories=scenario.uav_trajectory.copy(),
             user_history=scenario.user_history.copy(),
             target_history=scenario.target_history.copy(),
+            energy_consumed_j_per_uav=energy_per_uav,
+            energy_consumed_j_avg=float(np.mean(energy_per_uav)),
+            mission_feasible=len(infeasible) == 0,
+            infeasible_uavs=infeasible,
         )
         return results
 
