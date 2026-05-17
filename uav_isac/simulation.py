@@ -183,16 +183,21 @@ class ISACSimulation:
         self,
         trajectory_policy: str = "greedy",
         sensing_power_ratios: np.ndarray | None = None,
+        preset_trajectory: np.ndarray | None = None,
     ) -> SimulationResults:
         """
         Run the full ISAC simulation.
 
         Parameters
         ----------
-        trajectory_policy : "greedy" | "circular" | "hover"
+        trajectory_policy : "greedy" | "circular" | "preset" | "hover"
         sensing_power_ratios : (n_steps,) array of alpha values
             for time-varying resource allocation. If None, uses
             the fixed ratio from SensingParams.
+        preset_trajectory : (n_steps+1, n_uavs, 2 or 3) array of
+            pre-planned UAV positions. Required when trajectory_policy
+            is "preset"; each step drives the UAV toward the next
+            waypoint, with speed clipped to v_max in scenario.step().
 
         Returns
         -------
@@ -268,6 +273,16 @@ class ISACSimulation:
                 vel = self._greedy_trajectory(scenario)
             elif trajectory_policy == "circular":
                 vel = self._circular_trajectory(scenario, t)
+            elif trajectory_policy == "preset":
+                if preset_trajectory is None:
+                    raise ValueError(
+                        "trajectory_policy='preset' requires preset_trajectory"
+                    )
+                if t + 1 < preset_trajectory.shape[0]:
+                    next_xy = preset_trajectory[t + 1, :, :2]
+                    vel = (next_xy - scenario.uav_positions[:, :2]) / self.scenario_params.dt
+                else:
+                    vel = None  # hover at last step
             else:  # hover
                 vel = None
 
