@@ -18,6 +18,7 @@ from uav_isac import (
     SensingParams,
     EnergyParams,
     ISACSimulation,
+    joint_optimize_trajectory,
 )
 from uav_isac.visualization import (
     plot_pareto_curve,
@@ -127,7 +128,7 @@ def main():
     # runs[(n_uavs, mob_name)] = (scenario_params, single_result, pareto_list)
     runs: dict[tuple[int, str], tuple] = {}
 
-    for n_uavs in (1, 2):
+    for n_uavs in (1, 2, 3, 4):
         for mob_name, user_mob, target_mob in MOBILITY_CONFIGS:
             label = f"{n_uavs}uav_{mob_name}"
             print("\n" + "=" * 60)
@@ -142,6 +143,45 @@ def main():
             runs[(n_uavs, mob_name)] = (sp, single, pareto)
 
     # ==================================================================
+    # Joint optimization (static only, both 1-UAV and 2-UAV)
+    # SLSQP with greedy warm-start; α swept identically to greedy so
+    # Pareto curves overlay directly for comparison.
+    # ==================================================================
+    # joint_runs[n_uavs] = list[SimulationResults] indexed by alpha
+    joint_runs: dict[int, list] = {}
+
+    for n_uavs in (1, 2):
+        label = f"{n_uavs}uav_joint"
+        print("\n" + "=" * 60)
+        print(f"Running {label} (SLSQP, static, warm-start = greedy)")
+        print("=" * 60)
+        sp = build_scenario(n_uavs, "static", "static", seed)
+
+        sweep = []
+        for a in alphas:
+            sens = SensingParams(**sensing_params_template.__dict__)
+            sens.sensing_power_ratio = float(a)
+            Q_opt, info = joint_optimize_trajectory(
+                sp, channel_params, sens, energy_params, alpha=float(a),
+                d_min=30.0, max_iter=30, tol=1e-6, verbose=False,
+            )
+            # Replay the optimized trajectory through the simulator to get
+            # consistent SimulationResults (same metrics path as greedy/separate)
+            sim = ISACSimulation(sp, channel_params, sens, energy_params)
+            res = sim.run(
+                trajectory_policy="preset",
+                preset_trajectory=Q_opt,
+            )
+            sweep.append(res)
+            tag = "✓" if info["converged"] else "✗"
+            fb = " [fallback]" if info["fallback_used"] else ""
+            print(
+                f"  α={a:.1f} [{info['method']}{fb} {tag} iter={info['iterations']}]"
+                f" → rate={res.total_avg_rate/1e6:.2f} Mbps,"
+                f" CRB={res.total_avg_crb:.2f} m,"
+                f" E={res.energy_consumed_j_avg/1000:.2f} kJ"
+            )
+        joint_runs[n_uavs] = sweep
     # Separate-policy sweep (only static mobility, 1 UAV + 2 UAV).
     # The sweep variable is `comm_fraction` ∈ [0.1, 0.9]; alpha is
     # auto-driven by the policy (0 in comm phase, 1 in sense phase).
@@ -178,26 +218,31 @@ def main():
     # ==================================================================
     print("\nGenerating plots...")
 
-    # Per-scenario Pareto curves (static, existing names preserved)
-    plot_pareto_curve(
-        runs[(1, "static")][2], alphas,
-        title="1 UAV — Communication-Sensing Trade-off",
-        save_path=str(output_dir / "pareto_1uav.png"),
-    )
-    plot_pareto_curve(
-        runs[(2, "static")][2], alphas,
-        title="2 UAVs — Communication-Sensing Trade-off",
-        save_path=str(output_dir / "pareto_2uav.png"),
-    )
+    # Per-scenario Pareto curves (static, one per n_uavs)
+    for n_uavs in (1, 2, 3, 4):
+        plot_pareto_curve(
+            runs[(n_uavs, "static")][2], alphas,
+            title=f"{n_uavs} UAV(s) — Communication-Sensing Trade-off",
+            save_path=str(output_dir / f"pareto_{n_uavs}uav.png"),
+        )
 
-    # 1 vs 2 UAV (static)
+    # 1 vs 2 UAV (static) — kept for backward compat
     plot_pareto_comparison(
         runs[(1, "static")][2], runs[(2, "static")][2], alphas,
         save_path=str(output_dir / "pareto_comparison.png"),
     )
 
+    # Cooperation gain: all four n_uavs on one chart (static mobility)
+    plot_pareto_multi(
+        {f"{n} UAV{'s' if n > 1 else ''}": runs[(n, "static")][2]
+         for n in (1, 2, 3, 4)},
+        alphas,
+        title="Cooperation gain — Pareto vs number of UAVs (static)",
+        save_path=str(output_dir / "pareto_n_uavs_static.png"),
+    )
+
     # Mobility sweep within each n_uavs
-    for n_uavs in (1, 2):
+    for n_uavs in (1, 2, 3, 4):
         bundle = {
             mob_name: runs[(n_uavs, mob_name)][2]
             for mob_name, _, _ in MOBILITY_CONFIGS
@@ -208,15 +253,15 @@ def main():
             save_path=str(output_dir / f"pareto_mobility_{n_uavs}uav.png"),
         )
 
-    # 1 vs 2 UAV under each mobility mode
+    # All n_uavs under each mobility mode
     for mob_name, _, _ in MOBILITY_CONFIGS:
         bundle = {
-            f"1 UAV": runs[(1, mob_name)][2],
-            f"2 UAVs": runs[(2, mob_name)][2],
+            f"{n} UAV{'s' if n > 1 else ''}": runs[(n, mob_name)][2]
+            for n in (1, 2, 3, 4)
         }
         plot_pareto_multi(
             bundle, alphas,
-            title=f"{mob_name} — 1 UAV vs 2 UAVs",
+            title=f"{mob_name} — number of UAVs comparison",
             save_path=str(output_dir / f"pareto_uavs_{mob_name}.png"),
         )
 
@@ -248,7 +293,7 @@ def main():
     # ==================================================================
     # Energy vs α — one chart per n_uavs, all mobility configs overlaid
     # ==================================================================
-    for n_uavs in (1, 2):
+    for n_uavs in (1, 2, 3, 4):
         bundle = {
             mob_name: runs[(n_uavs, mob_name)][2]
             for mob_name, _, _ in MOBILITY_CONFIGS
@@ -258,6 +303,50 @@ def main():
             title=f"{n_uavs} UAV(s) — Energy budget vs α",
             battery_j=energy_params.battery_j,
             save_path=str(output_dir / f"energy_per_alpha_{n_uavs}uav.png"),
+        )
+
+    # Cross-cut: energy per α with all n_uavs overlaid (static)
+    plot_energy_per_alpha(
+        {f"{n} UAV{'s' if n > 1 else ''}": runs[(n, "static")][2]
+         for n in (1, 2, 3, 4)},
+        alphas,
+        title="Energy vs α — cooperation gain (static)",
+        battery_j=energy_params.battery_j,
+        save_path=str(output_dir / "energy_n_uavs_static.png"),
+    )
+
+    # ==================================================================
+    # Joint vs greedy: Pareto, energy, and trajectory maps (static)
+    # ==================================================================
+    for n_uavs in (1, 2):
+        bundle = {
+            "greedy": runs[(n_uavs, "static")][2],
+            "joint (SLSQP)": joint_runs[n_uavs],
+        }
+        plot_pareto_multi(
+            bundle, alphas,
+            title=f"{n_uavs} UAV(s) — greedy vs joint optimization (static)",
+            save_path=str(output_dir / f"pareto_joint_{n_uavs}uav.png"),
+        )
+        plot_energy_per_alpha(
+            bundle, alphas,
+            title=f"{n_uavs} UAV(s) — Energy: greedy vs joint (static)",
+            battery_j=energy_params.battery_j,
+            save_path=str(output_dir / f"energy_joint_{n_uavs}uav.png"),
+        )
+
+    # Trajectory map for joint @ α=0.5 (middle of Pareto)
+    mid_idx = len(alphas) // 2
+    for n_uavs in (1, 2):
+        sp = build_scenario(n_uavs, "static", "static", seed)
+        res = joint_runs[n_uavs][mid_idx]
+        plot_trajectory_map(
+            res, sp,
+            user_positions=res.user_history[0] if res.user_history.size else None,
+            target_positions=res.target_history[0] if res.target_history.size else None,
+            user_history=res.user_history,
+            target_history=res.target_history,
+            save_path=str(output_dir / f"trajectory_joint_{n_uavs}uav_alpha0.5.png"),
         )
 
     # ==================================================================
@@ -287,12 +376,21 @@ def main():
     # Comparison bars
     # ==================================================================
     plot_comparison_bars(
-        {"1 UAV": runs[(1, "static")][1], "2 UAVs": runs[(2, "static")][1]},
+        {f"{n} UAV{'s' if n > 1 else ''}": runs[(n, "static")][1]
+         for n in (1, 2, 3, 4)},
         save_path=str(output_dir / "comparison_bars.png"),
     )
     plot_comparison_bars(
-        {"1 UAV": runs[(1, "mobile_both")][1], "2 UAVs": runs[(2, "mobile_both")][1]},
+        {f"{n} UAV{'s' if n > 1 else ''}": runs[(n, "mobile_both")][1]
+         for n in (1, 2, 3, 4)},
         save_path=str(output_dir / "comparison_bars_mobile_both.png"),
+    )
+    plot_comparison_bars(
+        {
+            "greedy 2 UAV": runs[(2, "static")][1],
+            "joint 2 UAV": joint_runs[2][mid_idx],
+        },
+        save_path=str(output_dir / "comparison_bars_greedy_vs_joint.png"),
     )
 
     # ==================================================================
@@ -300,17 +398,24 @@ def main():
     # ==================================================================
     print("Exporting CSV data...")
     rows = [
+        "policy,mobility,n_uavs,alpha,avg_rate_mbps,crb_rmse_m,"
+        "energy_kj_per_uav,feasible"
         "policy,mobility,n_uavs,alpha,comm_fraction,"
         "avg_rate_mbps,crb_rmse_m,energy_kj_per_uav,feasible"
     ]
     for (n_uavs, mob_name), (_, _, pareto) in runs.items():
         for a, r in zip(alphas, pareto):
             rows.append(
+                f"greedy,{mob_name},{n_uavs},{a:.1f},"
                 f"greedy,{mob_name},{n_uavs},{a:.1f},,"
                 f"{r.total_avg_rate/1e6:.4f},{r.total_avg_crb:.4f},"
                 f"{r.energy_consumed_j_avg/1000:.4f},"
                 f"{int(r.mission_feasible)}"
             )
+    for n_uavs, sweep in joint_runs.items():
+        for a, r in zip(alphas, sweep):
+            rows.append(
+                f"joint,static,{n_uavs},{a:.1f},"
     for n_uavs, sweep in separate_runs.items():
         for cf, r in zip(comm_fractions, sweep):
             rows.append(
