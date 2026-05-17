@@ -175,6 +175,66 @@ class ISACSimulation:
 
         return velocities
 
+    def _separate_trajectory(
+        self,
+        scenario: Scenario,
+        step: int,
+        comm_fraction: float,
+    ) -> np.ndarray:
+        """
+        Separate-optimization policy: time-split into pure-comm + pure-sense phases.
+
+        Phase 1 (steps 0 .. comm_fraction·n_steps): aim at centroid of nearest users.
+        Phase 2 (rest):                              aim at nearest sensing target.
+
+        No weighted blending — at any instant the UAV is dedicated to *one*
+        objective. This is the naive baseline that ignores the ISAC trade-off
+        on the trajectory level. Power split is handled separately in run()
+        via the sensing_power_ratios array.
+        """
+        n = scenario.params.n_uavs
+        velocities = np.zeros((n, 2))
+        comm_steps = int(comm_fraction * scenario.n_steps)
+        in_comm_phase = step < comm_steps
+
+        # Predict-ahead (consistent with greedy)
+        predicted_users = np.clip(
+            scenario.user_positions[:, :2]
+            + scenario.user_velocities * self.dt_lookahead,
+            0, scenario.params.area_size,
+        )
+        predicted_targets = np.clip(
+            scenario.target_positions[:, :2]
+            + scenario.target_velocities * self.dt_lookahead,
+            0, scenario.params.area_size,
+        )
+
+        for i in range(n):
+            uav_xy = scenario.uav_positions[i, :2]
+
+            if in_comm_phase:
+                user_dists = np.linalg.norm(predicted_users - uav_xy, axis=1)
+                n_per_uav = max(1, scenario.params.n_users // n)
+                nearest = np.argsort(user_dists)[:n_per_uav]
+                goal = predicted_users[nearest].mean(axis=0)
+            elif scenario.params.n_targets > 0:
+                tgt_dists = np.linalg.norm(predicted_targets - uav_xy, axis=1)
+                nearest_tgt = np.argmin(tgt_dists)
+                goal = predicted_targets[nearest_tgt]
+            else:
+                goal = uav_xy  # nothing to chase, hover
+
+            diff = goal - uav_xy
+            dist = np.linalg.norm(diff)
+            if dist > 1.0:
+                speed = min(
+                    dist / scenario.params.dt,
+                    scenario.params.uav_max_speed,
+                )
+                velocities[i] = diff / dist * speed
+
+        return velocities
+
     # ------------------------------------------------------------------
     # Main simulation loop
     # ------------------------------------------------------------------
@@ -183,16 +243,21 @@ class ISACSimulation:
         self,
         trajectory_policy: str = "greedy",
         sensing_power_ratios: np.ndarray | None = None,
+        comm_fraction: float = 0.5,
     ) -> SimulationResults:
         """
         Run the full ISAC simulation.
 
         Parameters
         ----------
-        trajectory_policy : "greedy" | "circular" | "hover"
+        trajectory_policy : "greedy" | "circular" | "separate" | "hover"
         sensing_power_ratios : (n_steps,) array of alpha values
             for time-varying resource allocation. If None, uses
-            the fixed ratio from SensingParams.
+            the fixed ratio from SensingParams — except in `separate`
+            policy where it is auto-generated as a step function (0
+            during comm phase, 1 during sense phase).
+        comm_fraction : fraction of mission spent in the comm phase
+            for the `separate` policy. Ignored otherwise.
 
         Returns
         -------
@@ -200,6 +265,14 @@ class ISACSimulation:
         """
         scenario = Scenario(self.scenario_params)
         n_steps = scenario.n_steps
+
+        # Separate policy: build a step-function power schedule
+        # (pure comm in phase 1, pure sense in phase 2). Skipped if the
+        # caller already supplied an explicit schedule.
+        if trajectory_policy == "separate" and sensing_power_ratios is None:
+            comm_steps = int(comm_fraction * n_steps)
+            sensing_power_ratios = np.zeros(n_steps)
+            sensing_power_ratios[comm_steps:] = 1.0
 
         # Storage
         time = np.zeros(n_steps)
@@ -268,6 +341,8 @@ class ISACSimulation:
                 vel = self._greedy_trajectory(scenario)
             elif trajectory_policy == "circular":
                 vel = self._circular_trajectory(scenario, t)
+            elif trajectory_policy == "separate":
+                vel = self._separate_trajectory(scenario, t, comm_fraction)
             else:  # hover
                 vel = None
 

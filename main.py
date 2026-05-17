@@ -119,9 +119,10 @@ def main():
 
     seed = 42
     alphas = np.linspace(0.1, 0.9, 9)
+    comm_fractions = np.linspace(0.1, 0.9, 9)
 
     # ==================================================================
-    # Run all (n_uavs × mobility) configurations
+    # Run all (n_uavs × mobility) configurations under greedy policy
     # ==================================================================
     # runs[(n_uavs, mob_name)] = (scenario_params, single_result, pareto_list)
     runs: dict[tuple[int, str], tuple] = {}
@@ -130,7 +131,7 @@ def main():
         for mob_name, user_mob, target_mob in MOBILITY_CONFIGS:
             label = f"{n_uavs}uav_{mob_name}"
             print("\n" + "=" * 60)
-            print(f"Running {label}")
+            print(f"Running {label} (greedy)")
             print("=" * 60)
 
             sp = build_scenario(n_uavs, user_mob, target_mob, seed)
@@ -139,6 +140,38 @@ def main():
                 energy_params, alphas, label,
             )
             runs[(n_uavs, mob_name)] = (sp, single, pareto)
+
+    # ==================================================================
+    # Separate-policy sweep (only static mobility, 1 UAV + 2 UAV).
+    # The sweep variable is `comm_fraction` ∈ [0.1, 0.9]; alpha is
+    # auto-driven by the policy (0 in comm phase, 1 in sense phase).
+    # ==================================================================
+    # separate_runs[n_uavs] = list[SimulationResults]   indexed by comm_fraction
+    separate_runs: dict[int, list] = {}
+
+    for n_uavs in (1, 2):
+        label = f"{n_uavs}uav_separate"
+        print("\n" + "=" * 60)
+        print(f"Running {label} (time-split: comm → sense)")
+        print("=" * 60)
+
+        sp = build_scenario(n_uavs, "static", "static", seed)
+        sweep = []
+        for cf in comm_fractions:
+            sim = ISACSimulation(
+                sp, channel_params,
+                SensingParams(**sensing_params_template.__dict__),
+                energy_params,
+            )
+            res = sim.run(trajectory_policy="separate", comm_fraction=float(cf))
+            sweep.append(res)
+            tag = "" if res.mission_feasible else f" [INFEASIBLE: UAVs {res.infeasible_uavs}]"
+            print(
+                f"  f_comm={cf:.1f} → rate={res.total_avg_rate/1e6:.2f} Mbps,"
+                f" CRB={res.total_avg_crb:.2f} m,"
+                f" E={res.energy_consumed_j_avg/1000:.2f} kJ{tag}"
+            )
+        separate_runs[n_uavs] = sweep
 
     # ==================================================================
     # Pareto plots
@@ -228,6 +261,29 @@ def main():
         )
 
     # ==================================================================
+    # Policy comparison: greedy vs separate (static mobility)
+    # Pareto curves are plotted on the same (CRB, rate) axes; the sweep
+    # variable differs (α for greedy, comm_fraction for separate) but
+    # both end up tracing a trade-off frontier.
+    # ==================================================================
+    for n_uavs in (1, 2):
+        bundle = {
+            "greedy": runs[(n_uavs, "static")][2],
+            "separate (time-split)": separate_runs[n_uavs],
+        }
+        plot_pareto_multi(
+            bundle, alphas,  # alpha labels are nominal here
+            title=f"{n_uavs} UAV(s) — greedy vs separate policy (static)",
+            save_path=str(output_dir / f"pareto_policy_{n_uavs}uav.png"),
+        )
+        plot_energy_per_alpha(
+            bundle, alphas,
+            title=f"{n_uavs} UAV(s) — Energy: greedy vs separate (static)",
+            battery_j=energy_params.battery_j,
+            save_path=str(output_dir / f"energy_policy_{n_uavs}uav.png"),
+        )
+
+    # ==================================================================
     # Comparison bars
     # ==================================================================
     plot_comparison_bars(
@@ -244,12 +300,21 @@ def main():
     # ==================================================================
     print("Exporting CSV data...")
     rows = [
-        "mobility,n_uavs,alpha,avg_rate_mbps,crb_rmse_m,energy_kj_per_uav,feasible"
+        "policy,mobility,n_uavs,alpha,comm_fraction,"
+        "avg_rate_mbps,crb_rmse_m,energy_kj_per_uav,feasible"
     ]
     for (n_uavs, mob_name), (_, _, pareto) in runs.items():
         for a, r in zip(alphas, pareto):
             rows.append(
-                f"{mob_name},{n_uavs},{a:.1f},"
+                f"greedy,{mob_name},{n_uavs},{a:.1f},,"
+                f"{r.total_avg_rate/1e6:.4f},{r.total_avg_crb:.4f},"
+                f"{r.energy_consumed_j_avg/1000:.4f},"
+                f"{int(r.mission_feasible)}"
+            )
+    for n_uavs, sweep in separate_runs.items():
+        for cf, r in zip(comm_fractions, sweep):
+            rows.append(
+                f"separate,static,{n_uavs},,{cf:.1f},"
                 f"{r.total_avg_rate/1e6:.4f},{r.total_avg_crb:.4f},"
                 f"{r.energy_consumed_j_avg/1000:.4f},"
                 f"{int(r.mission_feasible)}"
